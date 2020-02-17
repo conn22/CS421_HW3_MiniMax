@@ -14,7 +14,7 @@ import heapq
 
 from Game import *
 
-MAX_DEPTH = 3
+MAX_DEPTH = 4
 FOOD_CONSTR_PENALTY = 0
 TUNNEL_CONSTR_PENALTY = 0
 ##
@@ -37,14 +37,13 @@ class AIPlayer(Player):
     ##
     def __init__(self, inputPlayerId):
         super(AIPlayer, self).__init__(inputPlayerId, "Munchkin")
-        self.myFood = None
         self.isFirstTurn = None
-        self.myConstr = None
         self.foodDist = None
         self.enemyFoodDist = None
 
         self.bestFoodConstr = None
         self.bestFood = None
+        self.anthillCoords = None
         self.moveQueue = []
 
     ##
@@ -118,7 +117,6 @@ class AIPlayer(Player):
             move = self.moveQueue.pop()
             if move.moveType == END:
                 self.moveQueue = []
-            print(self.moveQueue)
             return move
         self.moveQueue = []
         self.visited = set()
@@ -129,9 +127,28 @@ class AIPlayer(Player):
             parent = parent.parent
         if parent.move.moveType == END:
             self.moveQueue = []
+            print(parent.move)
+        else:
+            for move in self.moveQueue:
+                print(move, end=";\t")
+            print()
         return parent.move
 
     def getMoveRecursive(self, node, alpha, beta):
+        if node.move:
+            if node.move.moveType == MOVE_ANT:
+                ant = getAntAt(node.state, node.move.coordList[-1])
+                if ant:
+                    ant.hasMoved = True
+                    currentInv = node.state.inventories[node.state.whoseTurn]
+                    prevInv = node.parent.state.inventories[node.state.whoseTurn]
+                    if currentInv.foodCount > prevInv.foodCount:
+                        currentInv.foodCount -= 1
+                        ant.carrying = True
+            elif node.move.moveType == BUILD:
+                ant = getAntAt(node.state, self.anthillCoords)
+                if ant:
+                    ant.hasMoved = True
         if node.depth > MAX_DEPTH:
             return (node, node.h)
         if node in self.visited:
@@ -184,10 +201,8 @@ class AIPlayer(Player):
         inventory = getCurrPlayerInventory(currentState)
         tunnel = inventory.getTunnels()[0]
         hill = inventory.getAnthill()
+        self.anthillCoords = hill.coords
         foods = getConstrList(currentState, None, (FOOD,))
-        enemyInv = getEnemyInv(None, currentState)
-        enemyTunnel = enemyInv.getTunnels()[0]
-        enemyHill = enemyInv.getAnthill()
 
         minDist = 100000  # arbitrarily large
 
@@ -219,21 +234,21 @@ class AIPlayer(Player):
     #
     def heuristicStepsToGoal(self, currentState):
         # Get common variables
-        me = currentState.whoseTurn
-        workers = getAntList(currentState, me, (WORKER,))
-        inventory = getCurrPlayerInventory(currentState)
-        otherInv = getEnemyInv(None, currentState)
-        anthillCoords = inventory.getAnthill().coords
+        workers = getAntList(currentState, self.me, (WORKER,))
+        # inventory = getCurrPlayerInventory(currentState)
+        inventory = currentState.inventories[self.me]
+        otherInv = currentState.inventories[1-self.me]
         otherAnthillCoords = otherInv.getAnthill().coords
         foodLeft = FOOD_GOAL - inventory.foodCount + len(workers)
 
         winner = getWinner(currentState)
         # Special case
+        #TODO: Fix for multiple players
         if winner == 1:
             return 0
-        elif winner ==0:
+        elif winner == 0:
             return 1000 # arbitraryily bad
-        elif foodLeft == 0 and getAntAt(currentState, anthillCoords).carrying:
+        elif foodLeft == 1 and getAntAt(currentState, self.anthillCoords).carrying:
             return 0
 
 
@@ -248,18 +263,18 @@ class AIPlayer(Player):
         # Lets us buy defense instead of workers when necessary
 
         # Unit variables
-        drones = getAntList(currentState, me, (DRONE,))
-        enemyWorkers = getAntList(currentState, 1 - me, (WORKER,))
-        enemyFighters = getAntList(currentState, 1 - me, (DRONE, SOLDIER, R_SOLDIER))
+        drones = getAntList(currentState, self.me, (DRONE,))
+        enemyWorkers = getAntList(currentState, 1 - self.me, (WORKER,))
+        enemyFighters = getAntList(currentState, 1 - self.me, (DRONE, SOLDIER, R_SOLDIER))
         scaryFighters = list(filter(lambda fighter: fighter.coords[1] < 5, enemyFighters))
-        soldiers = getAntList(currentState, me, (SOLDIER,))
+        soldiers = getAntList(currentState, self.me, (SOLDIER,))
 
         # If the other player is ahead on food or we have a drone, send a drone to kill workers
         if (otherInv.foodCount >= inventory.foodCount and len(enemyWorkers) > 0) or len(drones) > 0:
             source = None
             if len(drones) == 0:
                 adjustment += 1
-                source = anthillCoords
+                source = self.anthillCoords
                 wantWorker = False
                 foodLeft += UNIT_STATS[DRONE][COST]
             else:
@@ -274,13 +289,13 @@ class AIPlayer(Player):
         if len(scaryFighters) > 0:
             # We are going to increment adjustment by the number of moves necessary for a soldier
             # to reach all the enemy units
-            # We are also going to give us a food alloance to buy the soldier
+            # We are also going to give us a food allowance to buy the soldier
             start = None  # Start of movement paths
             if len(soldiers) == 0:
                 wantWorker = False
                 adjustment += len(scaryFighters)  # Penalty to incentivize buy
                 foodLeft += UNIT_STATS[SOLDIER][COST]
-                start = anthillCoords
+                start = self.anthillCoords
             else:
                 adjustment += len(scaryFighters)
                 start = soldiers[0].coords
@@ -297,14 +312,14 @@ class AIPlayer(Player):
                                                 UNIT_STATS[enemy.type][MOVEMENT] + UNIT_STATS[enemy.type][RANGE]):
                         ant = getAntAt(currentState, coord)
                         # Gently encourage retreat
-                        if ant != None and ant.player == me:
+                        if ant != None and ant.player == self.me:
                             adjustment += 1 if ant.type == WORKER or ant.type == QUEEN else 0
 
                         # If anthill in danger, double soldier food allowance and make threatening enemy high priority
                         # Also, this prevents a jam where drone by anthill keeps killing worker while soldier
                         #   is busy killing the newly-spawned drones
                         # These penalties are arbitrary but seem to get the job done
-                        if coord == anthillCoords:
+                        if coord == self.anthillCoords:
                             if len(soldiers) == 0:
                                 wantWorker = False
                                 foodLeft += UNIT_STATS[SOLDIER][COST]
@@ -316,17 +331,17 @@ class AIPlayer(Player):
         if len(soldiers) > 0:
             start = soldiers[0].coords
         else:
-            start = anthillCoords
+            start = self.anthillCoords
         adjustment += self.movesToReach(currentState, start, otherAnthillCoords, SOLDIER)
 
         # We need a fake worker count to prevent dividing by zero
-        # If we don't have a worker, we also allot a food alloance to buy one if we don't have defense units we were saving for
+        # If we don't have a worker, we also allot a food alloance to buy one
         workerCount = len(workers)
         if workerCount == 0:
             foodLeft += UNIT_STATS[WORKER][COST]
             workerCount = 1
 
-            # Prevent queen from jamming workers
+        # Prevent queen from jamming workers
         queen = inventory.getQueen()
         adjustment += 120.0 / (approxDist(queen.coords, self.bestFoodConstr.coords) + 1) + 120.0 / (
                     approxDist(queen.coords, self.bestFood.coords) + 1)
@@ -348,9 +363,9 @@ class AIPlayer(Player):
             raw = sum(costs)
         else:
             # Cost for our phantom worker to gather food
-            raw = self.getWorkerCost(currentState, anthillCoords, False)
+            raw = self.getWorkerCost(currentState, self.bestFoodConstr.coords, False)
 
-        if raw <= 1:
+        if raw == 0:
             return 0
 
         # Now, calculate cost to complete all the necessary full trips to gather all food
