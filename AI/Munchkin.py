@@ -14,9 +14,12 @@ import heapq
 
 from Game import *
 
-MAX_DEPTH = 4
-FOOD_CONSTR_PENALTY = 0
-TUNNEL_CONSTR_PENALTY = 0
+MAX_DEPTH = 3
+STABILITY_THRESHOLD = 10
+ABSOLUTE_CUTOFF = MAX_DEPTH + 3
+PRUNE = 0.70
+FOOD_CONSTR_PENALTY = 2
+TUNNEL_CONSTR_PENALTY = 2
 ##
 # AIPlayer
 # Description: The responsbility of this class is to interact with the game by
@@ -131,10 +134,11 @@ class AIPlayer(Player):
         else:
             for move in self.moveQueue:
                 print(move, end=";\t")
-            print()
+            print(parent.move)
         return parent.move
 
     def getMoveRecursive(self, node, alpha, beta):
+        canStop = True
         if node.move:
             if node.move.moveType == MOVE_ANT:
                 ant = getAntAt(node.state, node.move.coordList[-1])
@@ -149,7 +153,15 @@ class AIPlayer(Player):
                 ant = getAntAt(node.state, self.anthillCoords)
                 if ant:
                     ant.hasMoved = True
-        if node.depth > MAX_DEPTH:
+                canStop = False
+            elif node.move.moveType == END:
+                canStop = False
+        node.h = self.heuristicStepsToGoal(node.state)
+        if node.h == 0:
+            return (node, 0)
+        if node.parent and abs(node.h - node.parent.h) >= STABILITY_THRESHOLD:
+            canStop = False
+        if node.depth >= MAX_DEPTH and (canStop or node.depth >= ABSOLUTE_CUTOFF):
             return (node, node.h)
         if node in self.visited:
             return (node, None)
@@ -165,8 +177,10 @@ class AIPlayer(Player):
         nodes = self.expandNode(node)
         bestNode = None
         nodes.sort()
-        nodes = reversed(nodes)
-        for best in nodes:
+        nodes = list(reversed(nodes))
+        n = len(nodes)
+        cap = math.ceil(n*PRUNE)
+        for best in nodes[:cap]:
             child, cost = self.getMoveRecursive(best, alpha, beta)
             if cost != None and cost > alpha:
                 bestNode = child
@@ -179,7 +193,9 @@ class AIPlayer(Player):
         nodes = self.expandNode(node)
         bestNode = None
         nodes.sort()
-        for best in nodes:
+        n = len(nodes)
+        cap = math.ceil(n*PRUNE)
+        for best in nodes[:cap]:
             child, cost = self.getMoveRecursive(best, alpha, beta)
             if cost != None and cost < beta:
                 bestNode = child
@@ -241,13 +257,18 @@ class AIPlayer(Player):
         otherAnthillCoords = otherInv.getAnthill().coords
         foodLeft = FOOD_GOAL - inventory.foodCount + len(workers)
 
+        # Check if a player has won
         winner = getWinner(currentState)
-        # Special case
-        #TODO: Fix for multiple players
         if winner == 1:
-            return 0
+            if currentState.whoseTurn == self.me:
+                return 0
+            else:
+                return 1000 #infinity
         elif winner == 0:
-            return 1000 # arbitraryily bad
+            if currentState.whoseTurn == self.me:
+                return 1000 # infinity
+            else:
+                return 0
         elif foodLeft == 1 and getAntAt(currentState, self.anthillCoords).carrying:
             return 0
 
@@ -271,36 +292,20 @@ class AIPlayer(Player):
 
         # If the other player is ahead on food or we have a drone, send a drone to kill workers
         if (otherInv.foodCount >= inventory.foodCount and len(enemyWorkers) > 0) or len(drones) > 0:
-            source = None
             if len(drones) == 0:
                 adjustment += 1
-                source = self.anthillCoords
                 wantWorker = False
                 foodLeft += UNIT_STATS[DRONE][COST]
-            else:
-                source = drones[0].coords
-
-            if len(enemyWorkers) > 0:
-                adjustment += sum(map(lambda enemyWorker: \
-                              self.movesToReach(currentState, source, enemyWorker.coords, DRONE), enemyWorkers))
-            adjustment += self.movesToReach(currentState, source, otherInv.getAnthill().coords, DRONE)
 
         # If there are enemy units in our territory, fight them and retreat workers and queen
         if len(scaryFighters) > 0:
             # We are going to increment adjustment by the number of moves necessary for a soldier
             # to reach all the enemy units
             # We are also going to give us a food allowance to buy the soldier
-            start = None  # Start of movement paths
+            adjustment += len(scaryFighters)
             if len(soldiers) == 0:
-                wantWorker = False
-                adjustment += len(scaryFighters)  # Penalty to incentivize buy
-                foodLeft += UNIT_STATS[SOLDIER][COST]
-                start = self.anthillCoords
-            else:
-                adjustment += len(scaryFighters)
-                start = soldiers[0].coords
-            adjustment += sum(
-                map(lambda target: self.movesToReach(currentState, start, target.coords, SOLDIER), scaryFighters))
+                wantWorker = False  
+                foodLeft += UNIT_STATS[SOLDIER][COST] # Penalty to incentivize buy
 
             # Retreat workers and queen
             # We ignore this once workers are dead b/c Booger stops playing so there is no longer reason to retreat
@@ -320,11 +325,26 @@ class AIPlayer(Player):
                         #   is busy killing the newly-spawned drones
                         # These penalties are arbitrary but seem to get the job done
                         if coord == self.anthillCoords:
+                            start = None
                             if len(soldiers) == 0:
+                                start = self.anthillCoords
                                 wantWorker = False
                                 foodLeft += UNIT_STATS[SOLDIER][COST]
+                            else:
+                                start = soldiers[0].coords
                             adjustment += self.movesToReach(currentState, enemy.coords, start,
                                                             SOLDIER) * 10  # Arbitrary to make the priority
+
+        # Encourage drones to kill workers and storm the anthill
+        start = None
+        if len(drones) > 0:
+            start = drones[0].coords
+        else:
+            start = self.anthillCoords
+        if len(enemyWorkers) > 0:
+            adjustment += sum(map(lambda enemyWorker: \
+                            self.movesToReach(currentState, start, enemyWorker.coords, DRONE), enemyWorkers))
+        adjustment += self.movesToReach(currentState, start, otherInv.getAnthill().coords, DRONE)
 
         # Encourage soldiers to storm the anthill
         start = None
@@ -332,6 +352,9 @@ class AIPlayer(Player):
             start = soldiers[0].coords
         else:
             start = self.anthillCoords
+        if len(scaryFighters) > 0:
+            adjustment += sum(map(lambda target: \
+                self.movesToReach(currentState, start, target.coords, SOLDIER), scaryFighters))
         adjustment += self.movesToReach(currentState, start, otherAnthillCoords, SOLDIER)
 
         # We need a fake worker count to prevent dividing by zero
@@ -365,9 +388,6 @@ class AIPlayer(Player):
             # Cost for our phantom worker to gather food
             raw = self.getWorkerCost(currentState, self.bestFoodConstr.coords, False)
 
-        if raw == 0:
-            return 0
-
         # Now, calculate cost to complete all the necessary full trips to gather all food
         if foodRuns > 0:
             actions = self.getWorkerCost(currentState, self.bestFoodConstr.coords, False, True) * foodRuns
@@ -376,6 +396,9 @@ class AIPlayer(Player):
             # To prevent incentivizing worker when we need defense, we prentend there is one worker for this calculation
             #   when we do not want a worker
             raw += actions + math.ceil(actions / workerCount) if wantWorker else 2 * actions
+
+        if raw == 0:
+            return 0
 
         # Max 1 food per turn, so we cannot go under the number of food remaining
         raw = max(raw, foodLeft)
@@ -474,12 +497,12 @@ class MMNode:
         return self.h >= other.h
     def __gt__(self, other):
         return self.h > other.h
-    def equivalentTo(self, other):
+    def __eq__(self, other):
         return self.h == other.h and ((self.depth == other.depth and self.parent is other.parent and compareAnts(self.ant, other.ant)) or compareStates(self.state, other.state))
     def __hash__(self):
         return int(self.h) * 100 + self.depth * 10 + self.state.whoseTurn
-    def __eq__(self, other):
-        return self.h == other.h and self.depth == other.depth and compareStates(self.state, other.state)
+    # def __eq__(self, other):
+    #     return self.h == other.h and self.depth == other.depth and compareStates(self.state, other.state)
 
 def compareStates(currentState, newState):
         if currentState.whoseTurn != newState.whoseTurn:
