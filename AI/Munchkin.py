@@ -19,7 +19,7 @@ STABILITY_THRESHOLD = 10
 ABSOLUTE_CUTOFF = MAX_DEPTH + 3
 PRUNE = 0.70
 FOOD_CONSTR_PENALTY = 2
-TUNNEL_CONSTR_PENALTY = 2
+TUNNEL_CONSTR_PENALTY = 4
 ##
 # AIPlayer
 # Description: The responsbility of this class is to interact with the game by
