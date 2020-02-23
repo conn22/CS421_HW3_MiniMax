@@ -237,8 +237,8 @@ class AIPlayer(Player):
         minDist = 100000  # arbitrarily large
 
         for food in foods:
-            tunnelDist = self.movesToReach(currentState, tunnel.coords, food.coords, WORKER)
-            hillDist = self.movesToReach(currentState, hill.coords, food.coords, WORKER)
+            tunnelDist = self.movesToReach(tunnel.coords, food.coords, WORKER)
+            hillDist = self.movesToReach(hill.coords, food.coords, WORKER)
             if tunnelDist < minDist:
                 minDist = tunnelDist
                 self.bestFood = food
@@ -288,7 +288,7 @@ class AIPlayer(Player):
 
         # Prevent a jam where we have no food or workers but keep killing Booger drones by having all units rush the anthill
         if inventory.foodCount == 0 and len(workers) == 0:
-            return sum(map(lambda ant: self.movesToReach(currentState, ant.coords, otherAnthillCoords, ant.type),
+            return sum(map(lambda ant: self.movesToReach(ant.coords, otherAnthillCoords, ant.type),
                            inventory.ants))
 
         adjustment = 0  # Penalty added for being in a board state likely to lose.
@@ -331,7 +331,7 @@ class AIPlayer(Player):
                                 foodLeft += UNIT_STATS[SOLDIER][COST]
                             else:
                                 start = soldiers[0].coords
-                            adjustment += self.movesToReach(currentState, enemy.coords, start,
+                            adjustment += self.movesToReach(enemy.coords, start,
                                                             SOLDIER) * 10  # Arbitrary to make the priority
 
         # Encourage drones to kill workers and storm the anthill
@@ -342,8 +342,8 @@ class AIPlayer(Player):
             start = self.anthillCoords
         if len(enemyWorkers) > 0:
             adjustment += sum(map(lambda enemyWorker: \
-                            self.movesToReach(currentState, start, enemyWorker.coords, DRONE), enemyWorkers))
-        adjustment += self.movesToReach(currentState, start, otherInv.getAnthill().coords, DRONE)
+                            self.movesToReach(start, enemyWorker.coords, DRONE), enemyWorkers))
+        adjustment += self.movesToReach(start, otherInv.getAnthill().coords, DRONE)
 
         # Encourage soldiers to storm the anthill
         start = None
@@ -353,52 +353,52 @@ class AIPlayer(Player):
             start = self.anthillCoords
         if len(scaryFighters) > 0:
             adjustment += sum(map(lambda target: \
-                self.movesToReach(currentState, start, target.coords, SOLDIER), scaryFighters))
-        adjustment += self.movesToReach(currentState, start, otherAnthillCoords, SOLDIER)
+                self.movesToReach(start, target.coords, SOLDIER), scaryFighters))
+        adjustment += self.movesToReach(start, otherAnthillCoords, SOLDIER)
 
-        # We need a fake worker count to prevent dividing by zero
-        workerCount = len(workers)
-        if workerCount == 0:
+        # Penalize no workers
+        if len(workers) == 0:
             foodLeft += UNIT_STATS[WORKER][COST]
-            workerCount = 1
 
         # Prevent queen from jamming workers
         queen = inventory.getQueen()
         adjustment += 120.0 / (approxDist(queen.coords, self.bestFoodConstr.coords) + 1) + 120.0 / (
                     approxDist(queen.coords, self.bestFood.coords) + 1)
 
-        # Find actions needed to deliver food for economic victory
-        raw = 0  # Raw estimate assuming we do not have an opponent
+        raw = self.rawCostToGoal(workers, foodLeft)
+        if raw == 0:
+            return 0.0
+        return float(raw + adjustment)
+
+    # Find actions needed to deliver food for economic victory
+    def rawCostToGoal(self, workers, foodLeft):
+        raw = 0
+        workerCount = len(workers)
         costs = []  # Cost of each worker to deliver food
         for worker in workers:
-            raw += self.getWorkerPenalty(currentState, worker.coords)
-            costs.append(self.getWorkerCost(currentState, worker.coords, worker.carrying))
+            raw += self.getWorkerPenalty(worker.coords)
+            costs.append(self.getWorkerCost(worker.coords, worker.carrying))
 
         # First, calculate worker moves + end turns for all workers to deliver food
         if foodLeft < workerCount:
             sortedWorkers = sorted(costs)
             raw = sum(sortedWorkers[:foodLeft])
-        elif len(workers) > 0:
+        elif workerCount > 0:
             raw = sum(costs)
         else:
-            raw = self.getWorkerCost(currentState, self.bestFoodConstr.coords, False)
+            raw = self.getWorkerCost(self.bestFoodConstr.coords, False)
 
         # Now, calculate cost to complete all the necessary full trips to gather all food
-        foodRuns = foodLeft - len(workers)
+        foodRuns = foodLeft - workerCount
         if foodRuns > 0:
-            actions = self.getWorkerCost(currentState, self.bestFoodConstr.coords, False, True) * foodRuns
+            actions = self.getWorkerCost(self.bestFoodConstr.coords, False, True) * foodRuns
             raw +=  2 * actions
 
-        if raw == 0:
-            return 0
-
-        # Max 1 food per turn, so we cannot go under the number of food remaining
         raw = max(raw, foodLeft)
-
-        return float(raw + adjustment)
+        return raw
 
     ## Finds the number of move actions it will take to reach a given destination
-    def movesToReach(self, currentState, source, dest, unitType):
+    def movesToReach(self, source, dest, unitType):
         taxicabDist = abs(dest[0] - source[0]) + abs(dest[1] - source[1])
         cost = float(taxicabDist)
         return cost
@@ -426,7 +426,7 @@ class AIPlayer(Player):
         pass
 
     ## Gets penalties for workers staying on a construct
-    def getWorkerPenalty(self, currentState, workerCoords):
+    def getWorkerPenalty(self, workerCoords):
         if workerCoords == self.bestFoodConstr.coords: 
             return TUNNEL_CONSTR_PENALTY
         elif workerCoords == self.bestFood.coords:
@@ -440,13 +440,13 @@ class AIPlayer(Player):
     #
     # Returns:
     #   the number of moves it will take for the worker to deliver a food plus penalties
-    def getWorkerCost(self, currentState, workerCoords, carrying, isFakeAnt=False):
+    def getWorkerCost(self, workerCoords, carrying, isFakeAnt=False):
         cost = 0
         if carrying:
-            cost = self.movesToReach(currentState, workerCoords, self.bestFoodConstr.coords,
+            cost = self.movesToReach(workerCoords, self.bestFoodConstr.coords,
                                      WORKER) + TUNNEL_CONSTR_PENALTY 
         else:
-            cost = self.movesToReach(currentState, workerCoords, self.bestFood.coords,
+            cost = self.movesToReach(workerCoords, self.bestFood.coords,
                      WORKER) + self.foodDist + FOOD_CONSTR_PENALTY + TUNNEL_CONSTR_PENALTY
         return cost
 
@@ -508,5 +508,3 @@ def compareAnts(lhs, rhs):
             return lhs == rhs
         return lhs.coords == rhs.coords and lhs.type == rhs.type and lhs.carrying == rhs.carrying and \
                lhs.player == rhs.player
-
-
