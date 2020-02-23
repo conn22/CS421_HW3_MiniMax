@@ -17,7 +17,7 @@ from Game import *
 MAX_DEPTH = 3
 STABILITY_THRESHOLD = 10
 ABSOLUTE_CUTOFF = MAX_DEPTH + 3
-PRUNE = 0.70
+PRUNE = 0.65
 FOOD_CONSTR_PENALTY = 2
 TUNNEL_CONSTR_PENALTY = 4
 ##
@@ -130,11 +130,6 @@ class AIPlayer(Player):
             parent = parent.parent
         if parent.move.moveType == END:
             self.moveQueue = []
-            print(parent.move)
-        else:
-            for move in self.moveQueue:
-                print(move, end=";\t")
-            print(parent.move)
         return parent.move
 
     def getMoveRecursive(self, node, alpha, beta):
@@ -526,52 +521,3 @@ def compareAnts(lhs, rhs):
                lhs.player == rhs.player
 
 
-###################################################################
-#  Unit Testing
-#
-#
-#
-#
-# Initialize needed objects
-testPlayer = AIPlayer(0)
-basicState = GameState.getBasicState()
-
-foodConstr1 = Construction((3,3), FOOD)
-foodConstr2 = Construction((3,4), FOOD)
-basicState.inventories[NEUTRAL].constrs.append(foodConstr1)
-basicState.inventories[NEUTRAL].constrs.append(foodConstr2)
-
-
-# begin testing of methods
-testPlayer.firstTurn(basicState) # test out init method
-if testPlayer.bestFood.coords != (3,3) or testPlayer.bestFoodConstr.coords != (0,0) \
-        or testPlayer.foodDist != 3.0:
-    print("Error with firstTurn Initialization, Incorrect food or food Construction")
-
-moveCost = testPlayer.movesToReach(basicState,(0,0),(0,2),WORKER)
-if moveCost != 1.0:
-    print("Error with movesToReach.  Value: " + str(moveCost) + " Should be 1.0")
-
-
-heuristic = testPlayer.heuristicStepsToGoal(basicState)
-if heuristic != 9.0:
-    print("Error with heuristicStepsToGoal.  Value: " + str(heuristic) + " Should be 9.0")
-
-workerCost = testPlayer.getWorkerCost(basicState,(0,1),False)
-if workerCost != 8.0:
-    print("Error with getWorkerCost.  Value: " + str(workerCost) + " Should be 8.0")
-
-workerPenalty = testPlayer.getWorkerPenalty(basicState,testPlayer.bestFoodConstr.coords)
-if workerPenalty != 1:
-    print("Error with workerPenalty.  Value: " + str(workerPenalty) + " Should be 1")
-
-
-##Test bestMove return from node list
-workerBuild = Move(BUILD, [basicState.inventories[0].getAnthill().coords], WORKER)
-queenMove = Move(MOVE_ANT, [basicState.inventories[0].getQueen().coords], None)
-
-nextState1 = getNextState(basicState,queenMove)
-nextState2 = getNextState(basicState,workerBuild)
-
-nodeList = [MMNode(queenMove,basicState,0,testPlayer.heuristicStepsToGoal(nextState1),None)
-    ,MMNode(workerBuild,basicState,0,testPlayer.heuristicStepsToGoal(nextState2),None)]
